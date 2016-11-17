@@ -1,0 +1,3 @@
+cdm () {
+	eval ${docker-compose env $1}
+}

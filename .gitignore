@@ -1,0 +1,14 @@
+/.idea
+/*.iml
+.vagrant
+/packer/*.env
+/packer/packer_cache
+secret-*
+*.tfstate.backup
+*.pem
+*.log
+*.tfstate
+*.retry
+/go-demo
+/docker
+/docker*.tgz
