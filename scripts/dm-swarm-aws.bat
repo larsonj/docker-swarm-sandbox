@@ -11,13 +11,14 @@ FOR /L %%i IN (1,1,2) DO (
 )
 endlocal
 
+rem initialize swarm manager
 echo Pointing current node to swarm-1
 FOR /f "tokens=*" %%i IN ('docker-machine env swarm-1') DO %%i
 
 FOR /f "tokens=*" %%i IN ('docker-machine ip swarm-1') DO (
         echo Initializing swarm manager, IP=%%i
         docker swarm init --advertise-addr %%i
-        echo docker swarm init --advertise-addr %%i
+        echo docker swarm init --advertise-addr %%i --listen-addr 127.0.0.1
     )
 echo Swarm manager initialized
 
