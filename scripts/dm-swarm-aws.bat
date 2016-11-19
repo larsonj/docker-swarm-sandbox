@@ -4,8 +4,12 @@ setlocal enableextensions enabledelayedexpansion
 FOR /L %%i IN (1,1,2) DO (
     docker-machine create --driver amazonec2 ^
         --amazonec2-vpc-id vpc-8fc036e9 ^
+        --amazonec2-ami ami-8acbff9d ^
+        --amazonec2-region us-east-1
         --amazonec2-zone e ^
+        --amazonec2-subnet subnet-eaca18d6 ^
         --amazonec2-instance-type t2.nano ^
+        --amazonec2-ssh-keypath /home/ubuntu/.ssh ^
         --amazonec2-tags environment,test,domain,dockerSwarmDemo ^
         swarm-%%i
 )
