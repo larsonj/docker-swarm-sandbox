@@ -1,0 +1,193 @@
+#####
+# Provision docker machines; elect leader; all join swarm
+#####
+scripts/dm-swarm.sh
+
+#####
+# provision consul SD server
+# cloud-provisioning/createDockerFlowProxyService.sh
+#####
+export DOCKER_IP=$(docker-machine ip swarm-1)
+docker-compose -f docker-compose-proxy.yml \
+	up -d consul-server
+
+#####
+# TEST: verify SD server node is working
+#####
+curl -X PUT -d 'this is a test' http://$(docker-machine ip swarm-1):8500/v1/kv/msg1
+
+curl  http://$(docker-machine ip swarm-1):8500/v1/kv/msg1?key=msg1 | jq
+curl  http://$(docker-machine ip swarm-2):8500/v1/kv/msg1?key=msg1 | jq
+curl  http://$(docker-machine ip swarm-3):8500/v1/kv/msg1?key=msg1 | jq
+
+
+#####
+# TEST: add multiple kv pairs and test gossip working
+#####
+curl -X PUT -d 'this is another test' \
+	http://$(docker-machine ip swarm-2):8500/v1/kv/messages/msg2
+
+curl -X PUT -d 'this is a test with flags' \
+	http://$(docker-machine ip swarm-3):8500/v1/kv/messages/msg3?flags=1234
+
+curl http://$(docker-machine ip swarm-1):8500/v1/kv/?recurse | jq
+
+#####
+# TEST: delete test kv pairs and verify with recurse
+#####
+curl -X DELETE http://$(docker-machine ip swarm-2):8500/v1/kv/?recurse
+
+curl http://$(docker-machine ip swarm-3):8500/v1/kv/?recurse | jq
+
+#####
+# cloud-provisioning/addConsulAgents.sh
+# provision SD agents
+#####
+
+export CONSUL_SERVER_IP=$(docker-machine ip swarm-1)
+
+for i in 2 3; do
+	eval $(docker-machine env swarm-$i)
+
+	export DOCKER_IP=$(docker-machine ip swarm-$i)
+
+	docker-compose -f docker-compose-proxy.yml \
+		up -d consul-agent
+done
+
+#####
+# TEST: test gossip working between SD nodes
+# is msg1 available from agent nodes?
+#####
+
+curl http://$(docker-machine ip swarm-2):8500/v1/kv/msg1 
+
+
+#####
+# provision Docker Flow Proxy Service
+# 1. create overlay Proxy network
+# 2. provision HA proxy service
+#
+# cloud-provisioning/provisonDockerFlowProxyService.sh
+#####
+
+eval $(docker-machine env swarm-1)
+
+docker network create --driver overlay proxy
+
+docker service create --name proxy \
+	-p 80:80 \
+	-p 443:443 \
+	-p 8080:8080 \
+	--network proxy \
+	-e MODE=swarm \
+	--replicas 3 \
+	-e CONSUL_ADDRESS="$(docker-machine ip swarm-1):8500,\
+		$(docker-machine ip swarm-2):8500, \
+		$(docker-machine ip swarm-3):8500" \
+		vfarcic/docker-flow-proxy
+
+#####
+# provision Go Demo Services
+# 1. create overlay Proxy network
+# 2. provision Go Demo Servvices
+# 3. reconfigure HA proxy to distribute proper end point configuration to all GO service nodes
+#
+# cloud-provisioning/provisionGoDemoServices.sh
+#####
+docker network create --driver overlay go-demo
+
+docker service create --name go-demo-db \
+	--network go-demo \
+	mongo:3.2.10
+
+docker service create --name go-demo \
+	-e DB=go-demo-db \
+	--network go-demo \
+	 --network proxy \
+	 vfarcic/go-demo:1.0
+
+#reconfigure HA Proxy
+curl "$(docker-machine ip swarm-1):8080/v1/docker-flow-proxy/reconfigure?service\
+	Name=go-demo&servicePath=/demo&port=8080&distribute=true"	| jq
+
+# Distribute=true, when specified, the proxy will accept the
+# request, reconfigure itself, and resend the request to all other instances.
+
+#####
+# TEST: Go Demo Service is rechable from each swarm node
+#####
+curl -i $(docker-machine ip swarm-1)/demo/hello
+curl -i $(docker-machine ip swarm-2)/demo/hello
+curl -i $(docker-machine ip swarm-3)/demo/hello
+
+#####
+# TEST: Inspect HA proxy configuration file for an arbitary node (proxy.3)
+#####
+NODE=$(docker service ps proxy | grep "proxy.3" | awk '{print $4}')
+
+eval $(docker-machine env $NODE)
+
+ID=$(docker ps | grep "proxy.3" | awk '{print $1}')
+
+docker exec -it $ID cat /cfg/haproxy.cfg
+
+#####
+# provision a UTIL serice container for running administrative tools and examine proxy state stored in SD
+# 1. install apline linux container on the proxy network; run sleep for a long time to keep container running
+# 2. find the ID of one of the util instances and install drill that will show us the information & install drill 
+# 3. drill the proxy server to get the IP for the proxy service end point 
+#    When a request reaches that end-point, Docker network auto-magically
+#    performs load balancing across all the instances.
+# 4. drill the proxy servier to the the IP for each service instance via the "tasks" prefix 
+# 5. examine docker-flow service state that is stored in the consul service registry
+# 6. scale proxy to six instances 
+#####
+# 1. #
+docker service create --name util \
+	--network proxy \
+	--mode global \
+	alpine sleep 1000000000
+
+docker service ps util
+# 2. #
+eval $(docker-machine env swarm-2)
+
+ID=$(docker ps -q --filter label=com.docker.swarm.service.name=util)
+
+docker exec -it $ID apk add --update drill
+# 3. #
+docker exec -it $ID drill proxy
+
+# 4. #
+docker exec -it $ID drill tasks.proxy
+
+# 5. #
+curl http://$(docker-machine ip swarm-1):8500/v1/kv/docker-flow?recurse | jq
+
+# shutdown a proxy 
+eval $(docker service ps -f desired-state=Running proxy | \
+	tail -n 1 | \
+	awk '{print "docker-machine ssh "$4" docker rm -f "$2"."$1}')
+
+docker service ps proxy
+
+# 6. #
+docker service scale proxy=6
+
+#####
+# TEST: Inspect HA proxy configuration file for one of new newly scaled nodes (proxy.6)
+#       Confirm the go-demo route has been auto-magically updated according to the consul SD state according to docker-flow-proxy 
+#       The acl and back end sould be upddated to reflect "acl url_go-demo path_beg /demo", "backend go-demo-be"...
+#####
+NODE=$(docker service ps proxy | grep "proxy.6" | awk '{print $4}')
+
+eval $(docker-machine env $NODE)
+
+ID=$(docker ps | grep "proxy.6" | awk '{print $1}')
+
+docker exec -it $ID cat /cfg/haproxy.cfg
+
+
+
+

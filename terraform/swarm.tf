@@ -7,12 +7,14 @@ resource "aws_security_group" "vxlan" {
     from_port = 0
     to_port = 0
     protocol = "-1"
+    cidr_blocks = ["0.0.0.0/0"]
   }
 
   egress {
     from_port = 0
     to_port = 0
     protocol = "-1"
+    cidr_blocks = ["0.0.0.0/0"]
   }
 
 }
@@ -126,4 +128,5 @@ output "swarm_init_public_ip" {
 output "swarm_init_private_ip" {
   value = "${aws_instance.swarm-init.private_ip}"
 }
+
 

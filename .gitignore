@@ -12,3 +12,4 @@ secret-*
 /go-demo
 /docker
 /docker*.tgz
+**~
